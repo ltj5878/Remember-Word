@@ -2,6 +2,10 @@
 import { ref } from 'vue'
 import { useApi } from '../composables/useApi'
 
+const emit = defineEmits<{
+  added: []
+}>()
+
 const original = ref('')
 const translation = ref('')
 const message = ref('')
@@ -18,6 +22,7 @@ async function handleSubmit() {
   try {
     await addWord(original.value.trim(), translation.value.trim())
     message.value = '录入成功！'
+    emit('added')
     original.value = ''
     translation.value = ''
   } catch {
