@@ -9,7 +9,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  answer: [correct: boolean]
+  answer: [correct: boolean, selectedIndex: number]
 }>()
 
 const selected = ref<number | null>(null)
@@ -20,7 +20,7 @@ function select(i: number) {
   selected.value = i
   answered.value = true
   setTimeout(() => {
-    emit('answer', i === props.question.answer_index)
+    emit('answer', i === props.question.answer_index, i)
   }, 1000)
 }
 

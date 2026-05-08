@@ -35,4 +35,19 @@ def init_db():
                     ALTER TABLE words ADD COLUMN IF NOT EXISTS {col} {definition};
                 END $$;
             """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS review_logs (
+                id                  SERIAL PRIMARY KEY,
+                word_id             INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+                reviewed_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                correct             BOOLEAN NOT NULL,
+                review_count_before INTEGER NOT NULL,
+                interval_days_before INTEGER NOT NULL,
+                ease_factor_before  REAL NOT NULL,
+                scheduled_at        TIMESTAMP,
+                overdue_days        REAL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_review_logs_word_id ON review_logs(word_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_review_logs_reviewed_at ON review_logs(reviewed_at)")
         conn.commit()

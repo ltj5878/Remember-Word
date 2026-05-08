@@ -8,11 +8,16 @@ import QuizResult from '../components/QuizResult.vue'
 const { getWordCount, getQuiz } = useApi()
 
 type Phase = 'setup' | 'playing' | 'result'
+export interface WrongAnswer {
+  question: QuizQuestion
+  selectedIndex: number
+}
 const phase = ref<Phase>('setup')
 const wordCount = ref(0)
 const questions = ref<QuizQuestion[]>([])
 const currentIndex = ref(0)
 const score = ref(0)
+const wrongAnswers = ref<WrongAnswer[]>([])
 const loading = ref(false)
 const error = ref('')
 
@@ -27,6 +32,7 @@ async function startQuiz(num: number, mode: string, difficultOnly: boolean) {
     questions.value = await getQuiz(num, mode, difficultOnly)
     currentIndex.value = 0
     score.value = 0
+    wrongAnswers.value = []
     phase.value = 'playing'
   } catch (e: any) {
     error.value = e.message
@@ -35,8 +41,15 @@ async function startQuiz(num: number, mode: string, difficultOnly: boolean) {
   }
 }
 
-function handleAnswer(correct: boolean) {
-  if (correct) score.value++
+function handleAnswer(correct: boolean, selectedIndex: number) {
+  if (correct) {
+    score.value++
+  } else {
+    wrongAnswers.value.push({
+      question: questions.value[currentIndex.value],
+      selectedIndex,
+    })
+  }
   if (currentIndex.value + 1 < questions.value.length) {
     currentIndex.value++
   } else {
@@ -78,6 +91,7 @@ onMounted(loadCount)
         v-if="phase === 'result'"
         :score="score"
         :total="questions.length"
+        :wrong-answers="wrongAnswers"
         @retry="retry"
       />
     </div>

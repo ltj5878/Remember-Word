@@ -153,20 +153,32 @@ def submit_review_result(result: ReviewResult):
     """Submit a review result and update spaced repetition schedule."""
     with pool.connection() as conn:
         row = conn.execute(
-            "SELECT review_count, ease_factor, interval_days FROM words WHERE id = %s",
+            "SELECT review_count, ease_factor, interval_days, next_review_at FROM words WHERE id = %s",
             (result.word_id,),
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Word not found")
 
-        review_count, ease_factor, interval_days = row
+        review_count, ease_factor, interval_days, scheduled_at = row
         new_count, new_ease, new_interval, next_review = calculate_next_review(
             result.correct, review_count, ease_factor, interval_days
         )
 
+        overdue_days = None
+        if scheduled_at is not None:
+            overdue_days = (datetime.now() - scheduled_at).total_seconds() / 86400.0
+
         conn.execute(
             "UPDATE words SET review_count = %s, ease_factor = %s, interval_days = %s, next_review_at = %s WHERE id = %s",
             (new_count, new_ease, new_interval, next_review, result.word_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO review_logs
+                (word_id, correct, review_count_before, interval_days_before, ease_factor_before, scheduled_at, overdue_days)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (result.word_id, result.correct, review_count, interval_days, ease_factor, scheduled_at, overdue_days),
         )
         conn.commit()
 
@@ -198,3 +210,127 @@ def get_flashcards(
                 (num,),
             ).fetchall()
     return [row_to_word(r) for r in rows]
+
+
+# ============ Stats ============
+
+@app.get("/api/stats/review")
+def get_review_stats(days: int = Query(default=30, ge=1, le=365)):
+    """聚合复习日志，评估当前 SM-2 策略的实际效果。"""
+    interval = f"{days} days"
+    with pool.connection() as conn:
+        overall = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE correct) AS correct,
+                COUNT(DISTINCT word_id) AS words_reviewed
+            FROM review_logs
+            WHERE reviewed_at >= NOW() - %s::interval
+            """,
+            (interval,),
+        ).fetchone()
+
+        by_count = conn.execute(
+            """
+            SELECT review_count_before,
+                   COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE correct) AS correct
+            FROM review_logs
+            WHERE reviewed_at >= NOW() - %s::interval
+            GROUP BY review_count_before
+            ORDER BY review_count_before
+            """,
+            (interval,),
+        ).fetchall()
+
+        by_interval = conn.execute(
+            """
+            SELECT
+                CASE
+                    WHEN interval_days_before = 0 THEN '0 (new)'
+                    WHEN interval_days_before = 1 THEN '1d'
+                    WHEN interval_days_before <= 3 THEN '2-3d'
+                    WHEN interval_days_before <= 7 THEN '4-7d'
+                    WHEN interval_days_before <= 21 THEN '8-21d'
+                    ELSE '22d+'
+                END AS bucket,
+                MIN(interval_days_before) AS bucket_min,
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE correct) AS correct
+            FROM review_logs
+            WHERE reviewed_at >= NOW() - %s::interval
+            GROUP BY bucket
+            ORDER BY bucket_min
+            """,
+            (interval,),
+        ).fetchall()
+
+        overdue = conn.execute(
+            """
+            SELECT
+                AVG(overdue_days) FILTER (WHERE overdue_days IS NOT NULL) AS avg_overdue,
+                COUNT(*) FILTER (WHERE overdue_days > 1) AS late_reviews,
+                COUNT(*) FILTER (WHERE overdue_days IS NOT NULL) AS scheduled_reviews
+            FROM review_logs
+            WHERE reviewed_at >= NOW() - %s::interval
+            """,
+            (interval,),
+        ).fetchone()
+
+        daily = conn.execute(
+            """
+            SELECT DATE(reviewed_at) AS day,
+                   COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE correct) AS correct
+            FROM review_logs
+            WHERE reviewed_at >= NOW() - %s::interval
+            GROUP BY day
+            ORDER BY day
+            """,
+            (interval,),
+        ).fetchall()
+
+    total = overall[0] or 0
+    correct = overall[1] or 0
+    return {
+        "window_days": days,
+        "overall": {
+            "total": total,
+            "correct": correct,
+            "accuracy": round(correct / total, 4) if total else None,
+            "words_reviewed": overall[2] or 0,
+        },
+        "by_review_count": [
+            {
+                "review_count_before": r[0],
+                "total": r[1],
+                "correct": r[2],
+                "accuracy": round(r[2] / r[1], 4) if r[1] else None,
+            }
+            for r in by_count
+        ],
+        "by_interval_bucket": [
+            {
+                "bucket": r[0],
+                "total": r[2],
+                "correct": r[3],
+                "accuracy": round(r[3] / r[2], 4) if r[2] else None,
+            }
+            for r in by_interval
+        ],
+        "overdue": {
+            "avg_overdue_days": round(float(overdue[0]), 2) if overdue[0] is not None else None,
+            "late_reviews": overdue[1] or 0,
+            "scheduled_reviews": overdue[2] or 0,
+        },
+        "daily": [
+            {
+                "day": r[0].isoformat(),
+                "total": r[1],
+                "correct": r[2],
+                "accuracy": round(r[2] / r[1], 4) if r[1] else None,
+            }
+            for r in daily
+        ],
+    }
